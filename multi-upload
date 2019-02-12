@@ -1,0 +1,270 @@
+#!/bin/bash
+
+IDE_PATH="/Applications/Arduino.app"
+# IDE_PATH="/Volumes/Storage HD/Applications/Arduino2.app"
+SERIAL="/dev/tty.*usbserial*"
+PROJECT=""
+BOARD="arduino:avr:uno"
+SEQUENTIAL=false
+RETRY=false
+CACHE=false
+USE_CLI=false
+
+################# Generate ID ##################
+epoch=$(date +%s)
+build_path="/tmp/multi-build-$epoch"
+mkdir "$build_path"
+
+trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
+trap "exit" INT TERM
+trap "kill 0" EXIT
+
+############### Define functions ###############
+help_txt(){
+    echo "usage: upload.sh [board_type] [project_file.ino]"
+}
+
+# --pref "build.path=$build_path"
+# compile(){
+#     arduino-cli compile --fqbn "$1" $2 
+#     exit $?
+# }
+
+
+upload(){
+    if [ "$CACHE" = false ]; then
+        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --upload "$2" 2> /tmp/multi-upload-out-$4
+    else
+        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --pref "build.path=$build_path" --upload "$2" 2> /tmp/multi-upload-out-$4
+    fi
+    exit $?
+}
+
+upload_nofile(){
+    if [ "$CACHE" = false ]; then
+        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --upload "$3"
+        exit $?
+    else
+        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --pref "build.path=$build_path" --upload "$3"
+        exit $?
+    fi
+}
+
+################# Check Inputs #################
+
+while getopts ":srhclb:p:i:d:" opt; do
+  case ${opt} in
+    s )
+      SEQUENTIAL=true
+      ;;
+    r )
+      RETRY=true
+      ;;
+    h )
+      help_txt
+      exit
+      ;;
+    c )
+      CACHE=true
+      ;;
+    l )
+      USE_CLI=true
+      ;;
+    b )
+      BOARD=$OPTARG
+      ;;
+    p )
+      PROJECT=$OPTARG
+      ;;
+    i )
+      IDE_PATH=$OPTARG
+      ;;
+    d )
+      SERIAL=$OPTARG
+      ;;
+    \? )
+      echo "Invalid option: $OPTARG" 1>&2
+      exit 1
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND -1))
+
+if [ -z "$PROJECT" ]; then
+    echo "Please designate project with the '-p' selector." 1>&2
+    help_txt
+    exit 1
+fi
+
+if ! [ -f "$PROJECT" ]; then
+    echo "Project file not found: " $PROJECT 1>&2
+    exit 1
+fi
+
+# if [ -z "$1" ]
+#   then
+#     help_txt
+#     exit 1
+# fi
+
+# if [ -z "$2" ]
+#   then
+#     help_txt
+#     exit 1
+# fi
+
+################# Main Program #################
+
+echo -e "\033[0;36m  __  __        _  _    _       _   _        _                _ 
+ |  \/  | _  _ | || |_ (_) ___ | | | | _ __ | | ___  __ _  __| |
+ | |\/| || || || ||  _|| ||___|| |_| || '_ \| |/ _ \/ _\` |/ _\` |
+ |_|  |_| \_,_||_| \__||_|      \___/ | .__/|_|\___/\__,_|\__,_|
+                                      |_|                       \033[0m"
+
+# Get a list of the serial devices
+array=($(ls -d $SERIAL));
+
+# Echo the header info
+echo ""
+echo -e "------------------------- Multi-Upload --------------------------"
+echo -e "\033[0mBoard:      (-b):  \033[0;32m" $BOARD
+echo -e "\033[0mProject:    (-p):  \033[0;32m" $PROJECT
+echo -e "\033[0mIDE Loc:    (-i):  \033[0;32m" $IDE_PATH
+echo -e "\033[0mDevices:    (-d):   \033[0;35m→\033[0m" ${array[0]}
+
+# Add the remaining serial devices to the header
+for i in "${array[@]:1}"
+do
+   echo -e '                    \033[0;35m→\033[0m' $i
+done
+echo -e "\033[0mSequential: (-s):  \033[0;32m" $SEQUENTIAL
+echo -e "\033[0mRetry:      (-r):  \033[0;32m" $RETRY
+echo -e "\033[0mCache:      (-c):  \033[0;32m" $CACHE
+echo -e "\033[0mUse CLI:    (-l):  \033[0;32m" $USE_CLI
+echo ""
+
+# Turns out compiling slows the whole thing dowm more than it helps
+# # echo -e -n "\033[0mCompiling project...\033[0m"
+# # compile "$1" "$2" > /tmp/multi-upload-out-verify 2> /dev/null &
+# # wait $!
+# # if [ $? -ne 0 ]; then
+# #     echo -e "\033[1;91mFAILED\033[0m"
+# #     echo -e "Compile with IDE or check log (/tmp/multi-upload-out-verify), retry"
+# #     exit 1
+# # else
+# #     echo -e "\033[0;92mSUCCESS\033[0m"
+# # fi
+
+# Init some variables
+log_files=()
+pids=()
+port=()
+exit_codes=()
+counter=0
+
+if [ "$SEQUENTIAL" = false ]; then
+    echo -e -n "\033[0mUploading to boards...\033[0m"
+else
+    echo -e "\033[0;92mUpload Trace:\033[0m"
+    echo ""
+    echo ""
+fi
+# Loop through the serial devices
+for i in "${array[@]}"
+do 
+    if [ "$SEQUENTIAL" = true ]; then
+        # Run an upload and set to background process with log file
+        echo -e "+---------------------------- Upload -----------------------------"
+        echo -e "| Port:     \033[1;36m" $i "\033[0m"
+        echo -e "\033[0m| \033[0;91m"
+        counter=$(($counter + 1))
+        upload_nofile "$BOARD" "$i" "$PROJECT" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+        if [ ${PIPESTATUS[0]} -ne 0 ]; then
+            if [ "$RETRY" = true ]; then
+                echo -e "\033[0m|"
+                echo -e "\033[0m| Result:    \033[1;91mUPLOAD FAILED\033[0m → Retrying"
+                echo -e "\033[0m|"
+                upload_nofile "$BOARD" "$i" "$PROJECT" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+                if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                    echo -e "\033[0m|"
+                    echo -e "\033[0m| Result:    \033[1;91mUPLOAD FAILED\033[0m"
+                    fails=$(($fails + 1))
+                else
+                    echo -e "\033[0m|"
+                    echo -e "\033[0m| Result:    \033[1;92mSUCCESS\033[0m"
+                    successes=$(($successes + 1))
+                fi
+            else
+                echo -e "\033[0m|"
+                echo -e "\033[0m| Result:    \033[1;91mUPLOAD FAILED\033[0m"
+                fails=$(($fails + 1))
+            fi
+        else
+            echo -e "\033[0m|"
+            echo -e "\033[0m| Result:    \033[1;92mSUCCESS\033[0m"
+            successes=$(($successes + 1))
+        fi
+        echo -e "\033[0m+-----------------------------------------------------------------"
+        echo ""
+    else
+        # Run an upload and set to background process with log file
+        upload "$BOARD" "$PROJECT" "$i" "$counter" 1> /dev/null &
+    fi
+    # Append the log file to an array
+    log_files+=("/tmp/multi-upload-out-$counter")
+    # Increase the counter
+    counter=$(($counter + 1))
+    # Record the background process PID
+    pids+=($!)
+    port+=($i)
+done
+
+if [ "$SEQUENTIAL" = false ]; then
+    # Loop through the PIDs and wait for each
+    for i in "${pids[@]}"
+    do 
+        wait "$i"
+        exit_codes+=($?)
+    done
+    # Announce that the processes are done
+    echo -e "\033[0;92mAll processes done!\033[0m"
+    echo ""
+    echo ""
+fi
+
+if [ "$SEQUENTIAL" = false ]; then
+    # Loop through each log file and print
+    counter=0
+    successes=0
+    fails=0
+    for i in "${log_files[@]}"
+    do 
+        echo -e "+---------------------------- Upload -----------------------------"
+        echo -e "| Port:     \033[1;36m" ${port[$counter]} "\033[0m"
+        if [ ${exit_codes[$counter]} -ne 0 ]; then
+            echo -e "| Result:    \033[1;91mUPLOAD FAILED\033[0m"
+            echo -e "| Log File: " $i ":"
+            echo "|"
+            awk '$0="\033[0m|\033[0;91m "$0' $i > "/tmp/multi-uploadt-print"
+            cat "/tmp/multi-uploadt-print"
+            echo -e "\033[0m|"
+            fails=$(($fails + 1))
+        else
+            echo -e "| Result:    \033[1;92mSUCCESS\033[0m"
+            successes=$(($successes + 1))
+        fi
+        echo -e "\033[0m+-----------------------------------------------------------------"
+        echo ""
+        counter=$(($counter + 1))
+    done
+fi
+
+echo -e "→ \033[0;92m$successes\033[0m Pass, \033[0;91m$fails\033[0m Fail"
+echo ""
+echo "Done"
+
+rm -rf "$build_path"
