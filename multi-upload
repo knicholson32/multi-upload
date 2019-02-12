@@ -3,8 +3,13 @@
 IDE_PATH="/Applications/Arduino.app"
 # IDE_PATH="/Volumes/Storage HD/Applications/Arduino2.app"
 SERIAL="/dev/tty.*usbserial*"
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+CONFIG="$DIR/.cli-config.yml"
 PROJECT=""
 BOARD="arduino:avr:uno"
+ARD15="~/Library/Arduino15"
+BOSSAC="$ARD15/packages/arduino/tools/bossac/1.7.0/bossac"
+BUILD_RES=""
 SEQUENTIAL=false
 RETRY=false
 CACHE=false
@@ -14,6 +19,10 @@ USE_CLI=false
 epoch=$(date +%s)
 build_path="/tmp/multi-build-$epoch"
 mkdir "$build_path"
+
+if [ ! -e "$CONFIG" ]; then
+    echo -e "board_manager:\n   additional_urls:\n    - \"https://adafruit.github.io/arduino-board-index/package_adafruit_index.json\"" >"$CONFIG"
+fi
 
 trap "trap - SIGTERM && kill -- -$$" SIGINT SIGTERM EXIT
 trap "exit" INT TERM
@@ -32,27 +41,65 @@ help_txt(){
 
 
 upload(){
-    if [ "$CACHE" = false ]; then
-        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --upload "$2" 2> /tmp/multi-upload-out-$4
+    if [ "$USE_CLI" = false ]; then
+        if [ "$CACHE" = false ]; then
+            "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --upload "$2" 2> /tmp/multi-upload-out-$4
+        else
+            "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --pref "build.path=$build_path" --upload "$2" 2> /tmp/multi-upload-out-$4
+        fi
+        exit $?
     else
-        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $3 --pref "build.path=$build_path" --upload "$2" 2> /tmp/multi-upload-out-$4
+        if [[ "$1" == *"samd"* ]]; then
+            echo "Detected SAMD"
+            echo "Sending bootloader wakeup"
+            stty -f "$3" 1200
+            sleep 1
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                echo "Failed to touch serial port! ($3)"
+                exit 1
+            fi
+            eval $BOSSAC -i -d --port="\"$3\"" -U true -i -e -w -v "\"$BUILD_RES\"" -R
+            exit $?
+        else
+            arduino-cli upload -p "$3" --fqbn "$1" "$2" 2> /tmp/multi-upload-out-$4
+        fi
+        exit $?
     fi
-    exit $?
 }
 
 upload_nofile(){
-    if [ "$CACHE" = false ]; then
-        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --upload "$3"
-        exit $?
+    echo "UPLOAD NF"
+    if [ "$USE_CLI" = false ]; then
+        if [ "$CACHE" = false ]; then
+            "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --upload "$3"
+            exit $?
+        else
+            "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --pref "build.path=$build_path" --upload "$3"
+            exit $?
+        fi
     else
-        "$IDE_PATH/Contents/MacOS/Arduino" --board "$1" --port $2 --pref "build.path=$build_path" --upload "$3"
+        if [[ "$1" == *"samd"* ]]; then
+            echo "Detected SAMD"
+            echo "Sending bootloader wakeup"
+            stty -f "$2" 1200
+            sleep 1
+            if [ ${PIPESTATUS[0]} -ne 0 ]; then
+                echo "Failed to touch serial port! ($2)"
+                exit 1
+            fi
+            eval $BOSSAC -i -d --port="\"$2\"" -U true -i -e -w -v "\"$BUILD_RES\"" -R
+            exit $?
+        else
+            arduino-cli upload -p "$2" --fqbn "$1" "$3" --config-file "$CONFIG" --debug
+        fi
         exit $?
     fi
 }
 
+
 ################# Check Inputs #################
 
-while getopts ":srhclb:p:i:d:" opt; do
+while getopts ":srhclb:p:i:d:j:" opt; do
   case ${opt} in
     s )
       SEQUENTIAL=true
@@ -68,6 +115,7 @@ while getopts ":srhclb:p:i:d:" opt; do
       CACHE=true
       ;;
     l )
+      command -v arduino-cli >/dev/null 2>&1 || { echo >&2 "Invalid option: -l: The arduino-cli is not installed. Install here (https://github.com/arduino/arduino-cli)"; exit 1; }
       USE_CLI=true
       ;;
     b )
@@ -81,6 +129,11 @@ while getopts ":srhclb:p:i:d:" opt; do
       ;;
     d )
       SERIAL=$OPTARG
+      ;;
+    j )
+      echo "Adding board url '$OPTARG' to '$CONFIG'"
+      echo -e "    - \"$OPTARG\"" >> "$CONFIG"
+      exit 0
       ;;
     \? )
       echo "Invalid option: $OPTARG" 1>&2
@@ -100,10 +153,20 @@ if [ -z "$PROJECT" ]; then
     exit 1
 fi
 
-if ! [ -f "$PROJECT" ]; then
-    echo "Project file not found: " $PROJECT 1>&2
-    exit 1
+if [ "$USE_CLI" = false ]; then
+    IFS='/' read -ra A_PATH <<< "${PROJECT%/}"
+    printf -v PROJECT '%s/%s.ino' "${PROJECT%/}" "${A_PATH[${#A_PATH[@]}-1]}"
+else
+    CACHE=false
 fi
+
+# if ! [ -f "$PROJECT" ]; then
+#     echo "Project file not found: " $PROJECT 1>&2
+#     exit 1
+# fi
+
+IFS=':' read -ra ADDR <<< "$BOARD"
+printf -v CORE '%s:%s' "${ADDR[0]}" "${ADDR[1]}"
 
 # if [ -z "$1" ]
 #   then
@@ -131,6 +194,7 @@ array=($(ls -d $SERIAL));
 # Echo the header info
 echo ""
 echo -e "------------------------- Multi-Upload --------------------------"
+echo -e "\033[0mBoard:      (-b):  \033[0;32m" $CORE
 echo -e "\033[0mBoard:      (-b):  \033[0;32m" $BOARD
 echo -e "\033[0mProject:    (-p):  \033[0;32m" $PROJECT
 echo -e "\033[0mIDE Loc:    (-i):  \033[0;32m" $IDE_PATH
@@ -147,17 +211,56 @@ echo -e "\033[0mCache:      (-c):  \033[0;32m" $CACHE
 echo -e "\033[0mUse CLI:    (-l):  \033[0;32m" $USE_CLI
 echo ""
 
-# Turns out compiling slows the whole thing dowm more than it helps
-# # echo -e -n "\033[0mCompiling project...\033[0m"
-# # compile "$1" "$2" > /tmp/multi-upload-out-verify 2> /dev/null &
-# # wait $!
-# # if [ $? -ne 0 ]; then
-# #     echo -e "\033[1;91mFAILED\033[0m"
-# #     echo -e "Compile with IDE or check log (/tmp/multi-upload-out-verify), retry"
-# #     exit 1
-# # else
-# #     echo -e "\033[0;92mSUCCESS\033[0m"
-# # fi
+if [ "$USE_CLI" = true ]; then
+    echo -e "\033[0;92mArduino-Cli Init"
+    echo -e -n "\033[0m| \033[0;91m"
+    arduino-cli core update-index 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+    #echo -e "\033[0m"
+
+    # echo arduino-cli core list --config-file "$CONFIG"| grep "$CORE"
+
+    if [ "$CORE"="adafruit:samd" ]; then
+        if [ -z "`arduino-cli core list | grep "arduino:samd"`" ]; then
+            echo -e "\033[0;92mIncluding 'arduino:samd'..."
+            arduino-cli core install "arduino:avr" --config-file "$CONFIG" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+            arduino-cli core install "arduino:samd" --config-file "$CONFIG" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+        fi
+    fi
+
+    if [ -z "`arduino-cli core list | grep "$CORE"`" ]; then
+        arduino-cli core install "$CORE" --config-file "$CONFIG" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+        if [ $? -ne 0 ]; then
+            echo ""
+            echo -e "\033[0;33mError installing core \033[0;91m'$CORE'\033[0;33m (-b)."
+            echo -e "Ensure the board manager url exists in '$CONFIG', or add via '-j'"
+            echo -e "(\033[4;33mhttps://github.com/arduino/arduino-cli#adding-3rd-party-cores\033[0;33m)"
+            exit 1
+        fi
+    fi
+    echo -e "\033[0;92mArduino-Cli Init Done"
+    # Turns out compiling slows the whole thing dowm more than it helps
+    echo -e "\033[0;92mCompiling project...\033[0m"
+    arduino-cli compile --fqbn "$BOARD" "$PROJECT" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
+    if [ $? -ne 0 ]; then
+        echo -e "\033[0m→ \033[1;91mFAILED\033[0m"
+        echo -e "Compile with IDE or check log (/tmp/multi-upload-out-verify), retry"
+        exit 1
+    else
+        BUILD_RES="$PROJECT"
+        IFS='/' read -ra A_PATH <<< "${PROJECT%/}"
+        PROJECT_NAME="${A_PATH[${#A_PATH[@]}-1]}"
+        BOARD_DOT=$(echo "$BOARD" | tr ":" ".")
+        printf -v BUILD_RES '%s/%s.%s.bin' "${PROJECT%/}" "$PROJECT_NAME" "$BOARD_DOT"
+        # if [ ! -f "$BUILD_RES" ]; then
+        #     printf -v BUILD_RES '%s/%s.%s.hex' "${PROJECT%/}" "$PROJECT_NAME" "$BOARD_DOT"
+        #     if [ ! -f "$BUILD_RES" ]; then
+        #         echo "Failed to locate resulting binary! ($BUILD_RES Not Found)"
+        #         exit 1
+        #     fi
+        # fi
+        echo -e "\033[0m→ \033[0;92mSUCCESS\033[0m"
+    fi
+fi
 
 # Init some variables
 log_files=()
