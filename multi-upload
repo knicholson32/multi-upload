@@ -181,13 +181,13 @@ run_update() {
     echo -e "Updating multi-upload...\n"
     if [ -f $LAST_COMMIT_FILE ]; then
         LAST_COMMIT=`cat $LAST_COMMIT_FILE`
-        if [ "$LAST_COMMIT" != "$COMMIT_HASH" ]; then
+        # if [ "$LAST_COMMIT" != "$COMMIT_HASH" ]; then
             fetch_and_update &
             my_pid=$!
-        else
-            echo -e "\033[0;92mAlready up to date!\033[0m Exit."
-            exit 0
-        fi
+        # else
+            # echo -e "\033[0;92mAlready up to date!\033[0m Exit."
+            # exit 0
+        # fi
     else
         fetch_and_update &
         my_pid=$!
@@ -482,3 +482,5 @@ fi
 echo -e "→ \033[0;92m$successes\033[0m Pass, \033[0;91m$fails\033[0m Fail"
 echo ""
 echo "Done"
+
+cleanup
