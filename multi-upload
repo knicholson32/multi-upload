@@ -266,8 +266,7 @@ if [ "$USE_CLI" = true ]; then
     # Turns out compiling slows the whole thing dowm more than it helps
     echo -e "\033[0;92mCompiling project...\033[0m"
     arduino-cli compile --fqbn "$BOARD" "$PROJECT" 2>&1 | awk '$0="\033[0m|\033[0;91m "$0'
-    echo $?
-    if [ $? -ne 0 ]; then
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo -e "\033[0m→ \033[1;91mFAILED - Errors exist\033[0m"
         exit 1
     else
