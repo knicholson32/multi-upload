@@ -128,39 +128,77 @@ upload_nofile(){
     fi
 }
 
+progressfilt ()
+{
+    local flag=false c count cr=$'\r' nl=$'\n'
+    while IFS='' read -d '' -rn 1 c
+    do
+        if $flag
+        then
+            printf '%s' "$c"
+        else
+            if [[ $c != $cr && $c != $nl ]]
+            then
+                count=0
+            else
+                ((count++))
+                if ((count > 1))
+                then
+                    flag=true
+                fi
+            fi
+        fi
+    done
+}
+
 fetch_and_update() {
     # fetch new files
-    wget -O - https://github.com/knicholson32/multi-upload/tarball/master | tar xz
-    echo "http://github.com/$USER_NAME/$REPO_NAME/tarball/master"
-
+    echo -e -n "Downloading repository..."
+    wget -q -O - https://github.com/knicholson32/multi-upload/tarball/master | tar xz
+    if [ ${PIPESTATUS[0]} -ne 0 ]; then
+        echo "Failed to download repo files."
+        exit 1
+    fi
+    echo -e " Done"
+    echo -e -n "Extracting files..."
     # remove patterns
-    [ "$EXCLUDED_PAT" ] && cd $USER_NAME-$REPO_NAME-* && rm -rvf $EXCLUDED_PAT && rm -rvf "LICENSE" && cd ..
-
+    [ "$EXCLUDED_PAT" ] && cd $USER_NAME-$REPO_NAME-* && rm -rf $EXCLUDED_PAT && rm -rf "LICENSE" && cd ..
     # copy all files form repo to destination
-    cp -rv $USER_NAME-$REPO_NAME-*/* $DEST_DIR || exit 1
-
+    cp -r $USER_NAME-$REPO_NAME-*/* $DEST_DIR || exit 1
+    echo -e " Done"
+    echo -e -n "Cleaning temporary folders..."
     # delete temporary fetched repo
     rm -rf $USER_NAME-$REPO_NAME-*/ || exit 1
-
+    echo -e " Done"
+    echo -e -n "Recording hash..."
     # updates file with last commit
     echo "$COMMIT_HASH" > $LAST_COMMIT_FILE || exit 1
+    echo -e " Done"
+    exit 0
 }
 
 run_update() {
+    echo -e "Updating multi-upload...\n"
     if [ -f $LAST_COMMIT_FILE ]; then
         LAST_COMMIT=`cat $LAST_COMMIT_FILE`
-
         if [ "$LAST_COMMIT" != "$COMMIT_HASH" ]; then
             fetch_and_update &
-            wait
-            exit $?
+            my_pid=$!
         else
-            echo "Already up to date! Exit."
+            echo -e "\033[0;92mAlready up to date!\033[0m Exit."
+            exit 0
         fi
     else
         fetch_and_update &
-        wait
-        exit $?
+        my_pid=$!
+    fi
+    wait $my_pid
+    if [ $? -ne 0 ]; then
+        echo -e "\n\033[0;91mFailed!\033[0m"
+        exit 1
+    else
+        echo -e "\n\033[0;92mSuccess!\033[0m"
+        exit 0
     fi
 }
 
