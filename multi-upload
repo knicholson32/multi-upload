@@ -154,7 +154,7 @@ progressfilt ()
 fetch_and_update() {
     # fetch new files
     echo -e -n "Downloading repository..."
-    wget -q -O - https://github.com/knicholson32/multi-upload/tarball/master | tar xz
+    wget -q -O - https://github.com/$USER_NAME/$REPO_NAME/tarball/master | tar xz
     if [ ${PIPESTATUS[0]} -ne 0 ]; then
         echo "Failed to download repo files."
         exit 1
@@ -164,7 +164,7 @@ fetch_and_update() {
     # remove patterns
     [ "$EXCLUDED_PAT" ] && cd $USER_NAME-$REPO_NAME-* && rm -rf $EXCLUDED_PAT && rm -rf "LICENSE" && cd ..
     # copy all files form repo to destination
-    cp -r $USER_NAME-$REPO_NAME-*/* $DEST_DIR || exit 1
+    /bin/cp -rf $USER_NAME-$REPO_NAME-*/* $DEST_DIR || exit 1
     echo -e " Done"
     echo -e -n "Cleaning temporary folders..."
     # delete temporary fetched repo
@@ -181,13 +181,13 @@ run_update() {
     echo -e "Updating multi-upload...\n"
     if [ -f $LAST_COMMIT_FILE ]; then
         LAST_COMMIT=`cat $LAST_COMMIT_FILE`
-        # if [ "$LAST_COMMIT" != "$COMMIT_HASH" ]; then
+        if [ "$LAST_COMMIT" != "$COMMIT_HASH" ]; then
             fetch_and_update &
             my_pid=$!
-        # else
-            # echo -e "\033[0;92mAlready up to date!\033[0m Exit."
-            # exit 0
-        # fi
+        else
+            echo -e "\033[0;92mAlready up to date!\033[0m Exit."
+            exit 0
+        fi
     else
         fetch_and_update &
         my_pid=$!
